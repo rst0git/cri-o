@@ -74,7 +74,10 @@ func (i *Image) isCorrupted(name string) error {
 	}
 
 	if _, err := ref.NewImage(context.Background(), nil); err != nil {
-		return errors.Errorf("Image %s exists in local storage but may be corrupted: %v", name, err)
+		if name == "" {
+			name = i.ID()[:12]
+		}
+		return errors.Errorf("Image %s exists in local storage but may be corrupted (remove the image to resolve the issue): %v", name, err)
 	}
 	return nil
 }
@@ -124,10 +127,16 @@ func (i *Image) IsReadOnly() bool {
 // IsDangling returns true if the image is dangling, that is an untagged image
 // without children.
 func (i *Image) IsDangling(ctx context.Context) (bool, error) {
+	return i.isDangling(ctx, nil)
+}
+
+// isDangling returns true if the image is dangling, that is an untagged image
+// without children.  If tree is nil, it will created for this invocation only.
+func (i *Image) isDangling(ctx context.Context, tree *layerTree) (bool, error) {
 	if len(i.Names()) > 0 {
 		return false, nil
 	}
-	children, err := i.getChildren(ctx, false)
+	children, err := i.getChildren(ctx, false, tree)
 	if err != nil {
 		return false, err
 	}
@@ -137,10 +146,17 @@ func (i *Image) IsDangling(ctx context.Context) (bool, error) {
 // IsIntermediate returns true if the image is an intermediate image, that is
 // an untagged image with children.
 func (i *Image) IsIntermediate(ctx context.Context) (bool, error) {
+	return i.isIntermediate(ctx, nil)
+}
+
+// isIntermediate returns true if the image is an intermediate image, that is
+// an untagged image with children.  If tree is nil, it will created for this
+// invocation only.
+func (i *Image) isIntermediate(ctx context.Context, tree *layerTree) (bool, error) {
 	if len(i.Names()) > 0 {
 		return false, nil
 	}
-	children, err := i.getChildren(ctx, false)
+	children, err := i.getChildren(ctx, false, tree)
 	if err != nil {
 		return false, err
 	}
@@ -185,7 +201,7 @@ func (i *Image) Parent(ctx context.Context) (*Image, error) {
 
 // HasChildren returns indicates if the image has children.
 func (i *Image) HasChildren(ctx context.Context) (bool, error) {
-	children, err := i.getChildren(ctx, false)
+	children, err := i.getChildren(ctx, false, nil)
 	if err != nil {
 		return false, err
 	}
@@ -194,7 +210,7 @@ func (i *Image) HasChildren(ctx context.Context) (bool, error) {
 
 // Children returns the image's children.
 func (i *Image) Children(ctx context.Context) ([]*Image, error) {
-	children, err := i.getChildren(ctx, true)
+	children, err := i.getChildren(ctx, true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -202,13 +218,16 @@ func (i *Image) Children(ctx context.Context) ([]*Image, error) {
 }
 
 // getChildren returns a list of imageIDs that depend on the image. If all is
-// false, only the first child image is returned.
-func (i *Image) getChildren(ctx context.Context, all bool) ([]*Image, error) {
-	tree, err := i.runtime.layerTree()
-	if err != nil {
-		return nil, err
+// false, only the first child image is returned.  If tree is nil, it will be
+// created for this invocation only.
+func (i *Image) getChildren(ctx context.Context, all bool, tree *layerTree) ([]*Image, error) {
+	if tree == nil {
+		t, err := i.runtime.layerTree()
+		if err != nil {
+			return nil, err
+		}
+		tree = t
 	}
-
 	return tree.children(ctx, i, all)
 }
 
@@ -712,10 +731,18 @@ func (i *Image) Size() (int64, error) {
 	return i.runtime.store.ImageSize(i.ID())
 }
 
+// HasDifferentDigestOptions allows for customizing the check if another
+// (remote) image has a different digest.
+type HasDifferentDigestOptions struct {
+	// containers-auth.json(5) file to use when authenticating against
+	// container registries.
+	AuthFilePath string
+}
+
 // HasDifferentDigest returns true if the image specified by `remoteRef` has a
 // different digest than the local one.  This check can be useful to check for
 // updates on remote registries.
-func (i *Image) HasDifferentDigest(ctx context.Context, remoteRef types.ImageReference) (bool, error) {
+func (i *Image) HasDifferentDigest(ctx context.Context, remoteRef types.ImageReference, options *HasDifferentDigestOptions) (bool, error) {
 	// We need to account for the arch that the image uses.  It seems
 	// common on ARM to tweak this option to pull the correct image.  See
 	// github.com/containers/podman/issues/6613.
@@ -735,6 +762,14 @@ func (i *Image) HasDifferentDigest(ctx context.Context, remoteRef types.ImageRef
 		sys.VariantChoice = inspectInfo.Variant
 	}
 
+	if options != nil && options.AuthFilePath != "" {
+		sys.AuthFilePath = options.AuthFilePath
+	}
+
+	return i.hasDifferentDigestWithSystemContext(ctx, remoteRef, sys)
+}
+
+func (i *Image) hasDifferentDigestWithSystemContext(ctx context.Context, remoteRef types.ImageReference, sys *types.SystemContext) (bool, error) {
 	remoteImg, err := remoteRef.NewImage(ctx, sys)
 	if err != nil {
 		return false, err

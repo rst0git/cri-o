@@ -438,7 +438,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	// 	}
 	// }
 
-	conmonEnv, extraFiles := r.configureConmonEnv(c, runtimeDir)
+	conmonEnv := r.configureConmonEnv(c, runtimeDir)
 
 	var filesToClose []*os.File
 	if options.PreserveFDs > 0 {
@@ -456,7 +456,6 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	execCmd.Env = append(execCmd.Env, conmonEnv...)
 
 	execCmd.ExtraFiles = append(execCmd.ExtraFiles, childSyncPipe, childStartPipe, childAttachPipe)
-	execCmd.ExtraFiles = append(execCmd.ExtraFiles, extraFiles...)
 	execCmd.Dir = c.execBundlePath(sessionID)
 	execCmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
@@ -610,9 +609,6 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 			_, err := utils.CopyDetachable(conn, httpBuf, detachKeys)
 			logrus.Debugf("STDIN copy completed")
 			stdinChan <- err
-			if connErr := conn.CloseWrite(); connErr != nil {
-				logrus.Errorf("Unable to close conn: %v", connErr)
-			}
 		}()
 	}
 
@@ -655,6 +651,10 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 			if err != nil {
 				return err
 			}
+			// copy stdin is done, close it
+			if connErr := conn.CloseWrite(); connErr != nil {
+				logrus.Errorf("Unable to close conn: %v", connErr)
+			}
 		case <-cancel:
 			return nil
 		}
@@ -683,6 +683,19 @@ func prepareProcessExec(c *Container, options *ExecOptions, env []string, sessio
 	}
 	if len(env) > 0 {
 		pspec.Env = append(pspec.Env, env...)
+	}
+
+	// Add secret envs if they exist
+	manager, err := c.runtime.SecretsManager()
+	if err != nil {
+		return nil, err
+	}
+	for name, secr := range c.config.EnvSecrets {
+		_, data, err := manager.LookupSecretData(secr.Name)
+		if err != nil {
+			return nil, err
+		}
+		pspec.Env = append(pspec.Env, fmt.Sprintf("%s=%s", name, string(data)))
 	}
 
 	if options.Cwd != "" {
@@ -744,11 +757,14 @@ func prepareProcessExec(c *Container, options *ExecOptions, env []string, sessio
 	} else {
 		pspec.Capabilities.Bounding = ctrSpec.Process.Capabilities.Bounding
 	}
+
+	// Always unset the inheritable capabilities similarly to what the Linux kernel does
+	// They are used only when using capabilities with uid != 0.
+	pspec.Capabilities.Inheritable = []string{}
+
 	if execUser.Uid == 0 {
 		pspec.Capabilities.Effective = pspec.Capabilities.Bounding
-		pspec.Capabilities.Inheritable = pspec.Capabilities.Bounding
 		pspec.Capabilities.Permitted = pspec.Capabilities.Bounding
-		pspec.Capabilities.Ambient = pspec.Capabilities.Bounding
 	} else {
 		if user == c.config.User {
 			pspec.Capabilities.Effective = ctrSpec.Process.Capabilities.Effective
