@@ -111,7 +111,8 @@ func (s *Server) RestoreContainer(ctx context.Context, req *private.RestoreConta
 			Pod:       req.Options.PodSandboxId,
 			ContainerCheckpointOptions: libpod.ContainerCheckpointOptions{
 				TargetFile: req.Options.CommonOptions.Archive,
-				Keep:       req.Options.CommonOptions.Keep,
+				//Keep:       req.Options.CommonOptions.Keep,
+				Keep: true,
 			},
 		}
 		opts = append(opts, localOpts)
@@ -263,10 +264,10 @@ func (s *Server) CRImportCheckpoint(ctx context.Context, input, sbID string, cha
 		"/sys":               true,
 		"/sys/fs/cgroup":     true,
 		"/dev/shm":           true,
-		"/etc/resolv.conf":   true,
+		"/etc/resolv.conf":   false,
 		"/etc/hostname":      true,
 		"/run/secrets":       true,
-		"/run/.containerenv": true,
+		"/run/.containerenv": false,
 	}
 
 	for _, m := range dumpSpec.Mounts {

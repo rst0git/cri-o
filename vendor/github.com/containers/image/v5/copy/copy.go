@@ -209,7 +209,7 @@ func Image(ctx context.Context, policyContext *signature.PolicyContext, destRef,
 
 	rawSource, err := srcRef.NewImageSource(ctx, options.SourceCtx)
 	if err != nil {
-		return nil, errors.Wrapf(err, "initializing source %s", transports.ImageName(srcRef))
+		return nil, errors.Wrapf(err, "XXX initializing source %s", transports.ImageName(srcRef))
 	}
 	defer func() {
 		if err := rawSource.Close(); err != nil {

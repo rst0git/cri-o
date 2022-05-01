@@ -8,13 +8,12 @@ import (
 )
 
 func (s *service) CheckpointContainer(ctx context.Context, req *pb.CheckpointContainerRequest) (*pb.CheckpointContainerResponse, error) {
-	request := &private.CheckpointContainerRequest {
-		Id: req.Id,
+	request := &private.CheckpointContainerRequest{
+		Id: req.ContainerId,
 		Options: &private.CheckpointContainerOptions{
 			CommonOptions: &private.CheckpointRestoreOptions{
 				Archive: req.Options.CommonOptions.ArchiveLocation,
 			},
-			LeaveRunning: req.Options.LeaveRunning,
 		},
 	}
 

@@ -324,7 +324,10 @@ func Get(root string, directory string, options GetOptions, globs []string, bulk
 		},
 		GetOptions: options,
 	}
+	logrus.Debugf("GET req %#v\n", req)
 	resp, err := copier(nil, bulkWriter, req)
+	logrus.Debugf("GET resp %#v\n", resp)
+	logrus.Debugf("GET err %#v\n", err)
 	if err != nil {
 		return err
 	}
@@ -480,10 +483,14 @@ func currentVolumeRoot() (string, error) {
 }
 
 func isVolumeRoot(candidate string) (bool, error) {
+	logrus.Debugf("isVolumeRoot candidate  %s\n", candidate)
 	abs, err := filepath.Abs(candidate)
 	if err != nil {
 		return false, errors.Wrapf(err, "error converting %q to an absolute path", candidate)
 	}
+	logrus.Debugf("isVolumeRoot abs  %s\n", abs)
+	logrus.Debugf("isVolumeRoot filepath.VolumeName(abs)  %s\n", filepath.VolumeName(abs))
+	logrus.Debugf("isVolumeRoot filepath.VolumeName(abs)+string(os.PathSeparator)  %s\n", filepath.VolumeName(abs)+string(os.PathSeparator))
 	return abs == filepath.VolumeName(abs)+string(os.PathSeparator), nil
 }
 
@@ -492,6 +499,7 @@ func looksLikeAbs(candidate string) bool {
 }
 
 func copier(bulkReader io.Reader, bulkWriter io.Writer, req request) (*response, error) {
+	logrus.Debugf("copier() 1 request %#v\n", req)
 	if req.Directory == "" {
 		if req.Root == "" {
 			wd, err := os.Getwd()
@@ -503,6 +511,7 @@ func copier(bulkReader io.Reader, bulkWriter io.Writer, req request) (*response,
 			req.Directory = req.Root
 		}
 	}
+	logrus.Debugf("copier() 2\n")
 	if req.Root == "" {
 		root, err := currentVolumeRoot()
 		if err != nil {
@@ -510,6 +519,7 @@ func copier(bulkReader io.Reader, bulkWriter io.Writer, req request) (*response,
 		}
 		req.Root = root
 	}
+	logrus.Debugf("copier() 3\n")
 	if filepath.IsAbs(req.Directory) {
 		_, err := convertToRelSubdirectory(req.Root, req.Directory)
 		if err != nil {
@@ -517,12 +527,16 @@ func copier(bulkReader io.Reader, bulkWriter io.Writer, req request) (*response,
 		}
 	}
 	isAlreadyRoot, err := isVolumeRoot(req.Root)
+	logrus.Debugf("copier() 4\n")
 	if err != nil {
 		return nil, errors.Wrapf(err, "error checking if %q is a root directory", req.Root)
 	}
+	logrus.Debugf("copier() 5\n")
 	if !isAlreadyRoot && canChroot {
-		return copierWithSubprocess(bulkReader, bulkWriter, req)
+		//return copierWithSubprocess(bulkReader, bulkWriter, req)
+		logrus.Debugf("return copierWithSubprocess(bulkReader, bulkWriter, req)\n")
 	}
+	logrus.Debugf("copier() 6\n")
 	return copierWithoutSubprocess(bulkReader, bulkWriter, req)
 }
 
@@ -577,7 +591,10 @@ func copierWithSubprocess(bulkReader io.Reader, bulkWriter io.Writer, req reques
 	if bulkWriter == nil {
 		bulkWriter = ioutil.Discard
 	}
+	logrus.Debugf("copierWithSubprocess() 1\n")
 	cmd := reexec.Command(copierCommand)
+	logrus.Debugf("copierWithSubprocess() 2 copierCommand %#v\n", copierCommand)
+	logrus.Debugf("copierWithSubprocess() 2 cmd %#v\n", cmd)
 	stdinRead, stdinWrite, err := os.Pipe()
 	if err != nil {
 		return nil, errors.Wrapf(err, "pipe")

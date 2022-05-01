@@ -153,35 +153,49 @@ func computeLayerMIMEType(what string, layerCompression archive.Compression) (om
 func (i *containerImageRef) extractRootfs() (io.ReadCloser, chan error, error) {
 	var uidMap, gidMap []idtools.IDMap
 	mountPoint, err := i.store.Mount(i.containerID, i.mountLabel)
+	logrus.Debugf("extractRootfs 1\n")
 	if err != nil {
+		logrus.Debugf("extractRootfs 2\n")
 		return nil, nil, errors.Wrapf(err, "error mounting container %q", i.containerID)
 	}
 	pipeReader, pipeWriter := io.Pipe()
+	logrus.Debugf("extractRootfs 3\n")
 	errChan := make(chan error, 1)
+	logrus.Debugf("extractRootfs 4\n")
 	go func() {
 		defer close(errChan)
+		logrus.Debugf("extractRootfs 5\n")
 		if i.idMappingOptions != nil {
 			uidMap, gidMap = convertRuntimeIDMaps(i.idMappingOptions.UIDMap, i.idMappingOptions.GIDMap)
 		}
+		logrus.Debugf("extractRootfs 6\n")
 		copierOptions := copier.GetOptions{
 			UIDMap: uidMap,
 			GIDMap: gidMap,
 		}
+		logrus.Debugf("extractRootfs 7\n")
 		err = copier.Get(mountPoint, mountPoint, copierOptions, []string{"."}, pipeWriter)
+		logrus.Debugf("extractRootfs 8 %q\n", err)
 		errChan <- err
 		pipeWriter.Close()
+		logrus.Debugf("extractRootfs 9\n")
 
 	}()
 	return ioutils.NewReadCloserWrapper(pipeReader, func() error {
+		logrus.Debugf("extractRootfs 10\n")
 		if err = pipeReader.Close(); err != nil {
 			err = errors.Wrapf(err, "error closing tar archive of container %q", i.containerID)
 		}
+		logrus.Debugf("extractRootfs 11\n")
 		if _, err2 := i.store.Unmount(i.containerID, false); err == nil {
+			logrus.Debugf("extractRootfs 12\n")
 			if err2 != nil {
 				err2 = errors.Wrapf(err2, "error unmounting container %q", i.containerID)
 			}
+			logrus.Debugf("extractRootfs 13\n")
 			err = err2
 		}
+		logrus.Debugf("extractRootfs 14 %q\n", err)
 		return err
 	}), errChan, nil
 }
@@ -308,18 +322,22 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 
 	// Build fresh copies of the configurations and manifest so that we don't mess with any
 	// values in the Builder object itself.
+	logrus.Debugf("ZZZ-1\n")
 	oimage, omanifest, dimage, dmanifest, err := i.createConfigsAndManifests()
 	if err != nil {
 		return nil, err
 	}
 
+	logrus.Debugf("ZZZ-2\n")
 	// Extract each layer and compute its digests, both compressed (if requested) and uncompressed.
 	blobLayers := make(map[digest.Digest]blobLayerInfo)
 	for _, layerID := range layers {
+		logrus.Debugf("ZZZ-3\n")
 		what := fmt.Sprintf("layer %q", layerID)
 		if i.squash {
 			what = fmt.Sprintf("container %q", i.containerID)
 		}
+		logrus.Debugf("ZZZ-4 %v\n", what)
 		// The default layer media type assumes no compression.
 		omediaType := v1.MediaTypeImageLayer
 		dmediaType := docker.V2S2MediaTypeUncompressedLayer
@@ -361,16 +379,19 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 			}
 			continue
 		}
+		logrus.Debugf("ZZZ-5\n")
 		// Figure out if we need to change the media type, in case we've changed the compression.
 		omediaType, dmediaType, err = computeLayerMIMEType(what, i.compression)
 		if err != nil {
 			return nil, err
 		}
+		logrus.Debugf("ZZZ-6\n")
 		// Start reading either the layer or the whole container rootfs.
 		noCompression := archive.Uncompressed
 		diffOptions := &storage.DiffOptions{
 			Compression: &noCompression,
 		}
+		logrus.Debugf("ZZZ-7\n")
 		var rc io.ReadCloser
 		var errChan chan error
 		if i.squash {
@@ -386,6 +407,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 				return nil, errors.Wrapf(err, "error extracting %s", what)
 			}
 		}
+		logrus.Debugf("ZZZ-8\n")
 		srcHasher := digest.Canonical.Digester()
 		// Set up to write the possibly-recompressed blob.
 		layerFile, err := os.OpenFile(filepath.Join(path, "layer"), os.O_CREATE|os.O_WRONLY, 0600)
@@ -398,6 +420,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		var destHasher digest.Digester
 		var multiWriter io.Writer
 		// Avoid rehashing when we do not compress.
+		logrus.Debugf("ZZZ-9\n")
 		if i.compression != archive.Uncompressed {
 			destHasher = digest.Canonical.Digester()
 			multiWriter = io.MultiWriter(counter, destHasher.Hash())
@@ -405,6 +428,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 			destHasher = srcHasher
 			multiWriter = counter
 		}
+		logrus.Debugf("ZZZ-10\n")
 		// Compress the layer, if we're recompressing it.
 		writeCloser, err := archive.CompressStream(multiWriter, i.compression)
 		if err != nil {
@@ -412,6 +436,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 			rc.Close()
 			return nil, errors.Wrapf(err, "error compressing %s", what)
 		}
+		logrus.Debugf("ZZZ-11\n")
 		writer := io.MultiWriter(writeCloser, srcHasher.Hash())
 		// Use specified timestamps in the layer, if we're doing that for
 		// history entries.
@@ -438,18 +463,23 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 			})
 			writer = io.Writer(writeCloser)
 		}
+		logrus.Debugf("ZZZ-12\n")
 		size, err := io.Copy(writer, rc)
 		writeCloser.Close()
 		layerFile.Close()
 		rc.Close()
 
+		logrus.Debugf("ZZZ-12.1 %#v\n", errChan)
+		logrus.Debugf("ZZZ-12.1 %v\n", errChan)
+		logrus.Debugf("ZZZ-13\n")
 		if errChan != nil {
 			err = <-errChan
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrapf(err, "channel error err")
 			}
 		}
 
+		logrus.Debugf("ZZZ-14\n")
 		if err != nil {
 			return nil, errors.Wrapf(err, "error storing %s to file", what)
 		}
@@ -460,6 +490,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		} else {
 			size = counter.Count
 		}
+		logrus.Debugf("ZZZ-15\n")
 		logrus.Debugf("%s size is %d bytes, uncompressed digest %s, possibly-compressed digest %s", what, size, srcHasher.Digest().String(), destHasher.Digest().String())
 		// Rename the layer so that we can more easily find it by digest later.
 		finalBlobName := filepath.Join(path, destHasher.Digest().String())

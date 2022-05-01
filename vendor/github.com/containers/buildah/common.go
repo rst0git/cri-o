@@ -16,6 +16,7 @@ import (
 	encconfig "github.com/containers/ocicrypt/config"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/unshare"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -73,6 +74,10 @@ func retryCopyImage(ctx context.Context, policyContext *signature.PolicyContext,
 		err           error
 		lastErr       error
 	)
+	logrus.Debugf("%#v\n", src)
+	logrus.Debugf("%#v\n", dest)
+	logrus.Debugf("%#v\n", registry)
+	logrus.Debugf("%#v\n", copyOptions)
 	err = retry.RetryIfNecessary(ctx, func() error {
 		manifestBytes, err = cp.Image(ctx, policyContext, dest, src, copyOptions)
 		if registry != nil && registry.Transport().Name() != docker.Transport.Name() {
