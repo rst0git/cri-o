@@ -56,10 +56,10 @@ const (
 	// create the container.
 	CheckpointAnnotationRootfsImageName = "io.podman.annotations.checkpoint.rootfsImageName"
 
-	// CheckpointAnnotationPodmanVersion is used by Container Checkpoint when
+	// CheckpointAnnotationCrioVersion is used by Container Checkpoint when
 	// creating a checkpoint image to specify the version of Podman used on the
 	// host where the checkpoint was created.
-	CheckpointAnnotationPodmanVersion = "io.podman.annotations.checkpoint.podman.version"
+	CheckpointAnnotationCrioVersion = "io.podman.annotations.checkpoint.crio.version"
 
 	// CheckpointAnnotationCriuVersion is used by Container Checkpoint when
 	// creating a checkpoint image to specify the version of CRIU used on the
@@ -75,7 +75,7 @@ func (c *ContainerServer) addCheckpointImageMetadata(importBuilder *buildah.Buil
 		CheckpointAnnotationRawImageName:    ctr.ImageName(),
 		CheckpointAnnotationRootfsImageID:   ctr.ImageRef(),
 		CheckpointAnnotationRootfsImageName: ctr.ImageName(),
-		CheckpointAnnotationPodmanVersion:   version.Get().Version,
+		CheckpointAnnotationCrioVersion:     version.Get().Version,
 	}
 
 	for key, value := range checkpointImageAnnotations {
