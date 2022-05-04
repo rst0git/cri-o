@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
 	"github.com/containers/podman/v3/libpod"
@@ -79,19 +80,9 @@ func (s *Server) RestoreContainer(ctx context.Context, req *private.RestoreConta
 	case req.Options.CommonOptions.Archive != "" && req.Options.PodSandboxId == "":
 		// Complete Pod restore from exported checkpoint
 		response.Pod = true
-		// First re-create Pod
-		dir, err := ioutil.TempDir("", "checkpoint")
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot create temporary directory for pod restore")
-		}
-		defer func() {
-			if err := os.RemoveAll(dir); err != nil {
-				logrus.Errorf("Could not recursively remove %s: %q", dir, err)
-			}
-		}()
 
 		log.Infof(ctx, "Restoring pod from %s", req.Options.CommonOptions.Archive)
-		response.Id, opts, err = s.importPodCheckpoint(ctx, req, dir)
+		response.Id, opts, err = s.importPodCheckpoint(ctx, req)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to restore pod %s", ctr)
 		}
@@ -147,37 +138,62 @@ func (s *Server) RestoreContainer(ctx context.Context, req *private.RestoreConta
 
 // also taken from Podman
 func (s *Server) CRImportCheckpoint(ctx context.Context, input, sbID string, changeMounts map[string]string) (ctrID string, retErr error) {
-	// First get the container definition from the
-	// tarball to a temporary directory
-	archiveFile, err := os.Open(input)
-	if err != nil {
-		return "", errors.Wrapf(err, "Failed to open checkpoint archive %s for import", input)
-	}
-	defer errorhandling.CloseQuiet(archiveFile)
-	options := &archive.TarOptions{
-		// Here we only need the files config.dump and spec.dump
-		ExcludePatterns: []string{
-			"artifacts",
-			"ctr.log",
-			metadata.RootFsDiffTar,
-			metadata.NetworkStatusFile,
-			metadata.DeletedFilesFile,
-			metadata.CheckpointDirectory,
-		},
-	}
-	dir, err := ioutil.TempDir("", "checkpoint")
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err := os.RemoveAll(dir); err != nil {
-			logrus.Errorf("Could not recursively remove %s: %q", dir, err)
+	dir := ""
+	if strings.HasPrefix(input, "/") || !strings.Contains(input, "/") {
+		// First get the container definition from the
+		// tarball to a temporary directory
+		archiveFile, err := os.Open(input)
+		if err != nil {
+			return "", errors.Wrapf(err, "Failed to open checkpoint archive %s for import", input)
 		}
-	}()
-	err = archive.Untar(archiveFile, dir, options)
-	if err != nil {
-		return "", errors.Wrapf(err, "Unpacking of checkpoint archive %s failed", input)
+		defer errorhandling.CloseQuiet(archiveFile)
+		options := &archive.TarOptions{
+			// Here we only need the files config.dump and spec.dump
+			ExcludePatterns: []string{
+				"artifacts",
+				"ctr.log",
+				metadata.RootFsDiffTar,
+				metadata.NetworkStatusFile,
+				metadata.DeletedFilesFile,
+				metadata.CheckpointDirectory,
+			},
+		}
+		dir, err := ioutil.TempDir("", "checkpoint")
+		if err != nil {
+			return "", err
+		}
+		defer func() {
+			if err := os.RemoveAll(dir); err != nil {
+				logrus.Errorf("Could not recursively remove %s: %q", dir, err)
+			}
+		}()
+		err = archive.Untar(archiveFile, dir, options)
+		if err != nil {
+			return "", errors.Wrapf(err, "Unpacking of checkpoint archive %s failed", input)
+		}
+	} else {
+		images, err := s.StorageImageServer().ResolveNames(s.config.SystemContext, input)
+		if err != nil {
+			return "", errors.Wrapf(err, "Unable to resolve checkpoint image %s", input)
+		}
+		if len(images) == 0 {
+			return "", errors.Wrapf(err, "Unable to find checkpoint image %s", input)
+		}
+
+		imageID, err := s.StorageImageServer().GetStore().Lookup(images[0])
+		if err != nil {
+			return "", errors.Wrapf(err, "Unable to lookup checkpoint image %s", input)
+		}
+
+		dir, err = s.StorageImageServer().GetStore().MountImage(imageID, nil, "")
+		if err != nil {
+			return "", errors.Wrapf(err, "Unable to mount checkpoint image %s", input)
+		}
+		defer func() {
+			s.StorageImageServer().GetStore().UnmountImage(imageID, false)
+		}()
 	}
+
 	logrus.Debugf("Unpacked checkpoint in %s", dir)
 
 	// Load spec.dump from temporary directory
@@ -373,18 +389,56 @@ func (s *Server) CRImportCheckpoint(ctx context.Context, input, sbID string, cha
 	return ctr.ID(), nil
 }
 
-func (s *Server) importPodCheckpoint(ctx context.Context, req *private.RestoreContainerRequest, dir string) (podID string, opts []*lib.ContainerCheckpointRestoreOptions, retErr error) {
+func (s *Server) importPodCheckpoint(ctx context.Context, req *private.RestoreContainerRequest) (podID string, opts []*lib.ContainerCheckpointRestoreOptions, retErr error) {
 	input := req.Options.CommonOptions.Archive
-	archiveFile, err := os.Open(input)
-	if err != nil {
-		return "", nil, errors.Wrapf(err, "Failed to open pod archive %s for import", input)
+	dir := ""
+
+	if strings.HasPrefix(input, "/") || !strings.Contains(input, "/") {
+		// First re-create Pod
+		dir, err := ioutil.TempDir("", "checkpoint")
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "cannot create temporary directory for pod restore")
+		}
+		defer func() {
+			if err := os.RemoveAll(dir); err != nil {
+				logrus.Errorf("Could not recursively remove %s: %q", dir, err)
+			}
+		}()
+		archiveFile, err := os.Open(input)
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "Failed to open pod archive %s for import", input)
+		}
+		defer errorhandling.CloseQuiet(archiveFile)
+		err = archive.Untar(archiveFile, dir, nil)
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "Unpacking of checkpoint archive %s failed", input)
+		}
+		logrus.Debugf("Unpacked pod checkpoint in %s", dir)
+	} else {
+		// Restore a checkpoint image from local image store
+		logrus.Debugf("Trying to restore the checkpoint from %s\n", input)
+
+		images, err := s.StorageImageServer().ResolveNames(s.config.SystemContext, input)
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "Unable to resolve checkpoint image %s", input)
+		}
+		if len(images) == 0 {
+			return "", nil, errors.Wrapf(err, "Unable to find checkpoint image %s", input)
+		}
+
+		imageID, err := s.StorageImageServer().GetStore().Lookup(images[0])
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "Unable to lookup checkpoint image %s", input)
+		}
+
+		dir, err = s.StorageImageServer().GetStore().Mount(imageID, "")
+		if err != nil {
+			return "", nil, errors.Wrapf(err, "Unable to mount checkpoint image %s", input)
+		}
+		defer func() {
+			s.StorageImageServer().GetStore().Unmount(dir, false)
+		}()
 	}
-	defer errorhandling.CloseQuiet(archiveFile)
-	err = archive.Untar(archiveFile, dir, nil)
-	if err != nil {
-		return "", nil, errors.Wrapf(err, "Unpacking of checkpoint archive %s failed", input)
-	}
-	logrus.Debugf("Unpacked pod checkpoint in %s", dir)
 
 	// Load pod.options from temporary directory
 	checkpointedPodOptions := new(metadata.CheckpointedPodOptions)
