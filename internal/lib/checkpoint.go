@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
@@ -26,6 +27,9 @@ func (c *ContainerServer) ContainerCheckpoint(
 	config *metadata.ContainerConfig,
 	opts *libpod.ContainerCheckpointOptions,
 ) (string, error) {
+
+	checkpoint_start := time.Now()
+
 	ctr, err := c.LookupContainer(ctx, config.ID)
 	if err != nil {
 		return "", fmt.Errorf("failed to find container %s: %w", config.ID, err)
@@ -94,6 +98,15 @@ func (c *ContainerServer) ContainerCheckpoint(
 	if !opts.KeepRunning {
 		if err := c.storageRuntimeServer.StopContainer(ctx, ctr.ID()); err != nil {
 			return "", fmt.Errorf("failed to unmount container %s: %w", ctr.ID(), err)
+		}
+	}
+
+	checkpoint_finish := time.Now()
+	duration := checkpoint_finish.Sub(checkpoint_start).Microseconds()
+
+	if opts.TargetFile != "" {
+		if err := os.WriteFile(opts.TargetFile+".txt", []byte(strconv.FormatInt(duration, 10)), 0666); err != nil {
+			log.Warnf(ctx, "Unable to write checkpoint duration", err)
 		}
 	}
 
