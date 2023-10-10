@@ -11,10 +11,10 @@ require (
 	github.com/checkpoint-restore/go-criu/v6 v6.3.0
 	github.com/container-orchestrated-devices/container-device-interface v0.6.0
 	github.com/containerd/cgroups v1.1.0
-	github.com/containerd/containerd v1.7.2
+	github.com/containerd/containerd v1.7.7
 	github.com/containerd/cri-containerd v1.19.0
 	github.com/containerd/fifo v1.1.0
-	github.com/containerd/nri v0.3.1-0.20230504231226-94185418e253
+	github.com/containerd/nri v0.4.0
 	github.com/containerd/ttrpc v1.2.2
 	github.com/containerd/typeurl v1.0.3-0.20220422153119-7f6e6d160d67
 	github.com/containernetworking/cni v1.1.2
@@ -89,7 +89,7 @@ require (
 	capnproto.org/go/capnp/v3 v3.0.0-alpha.9 // indirect
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
-	github.com/Microsoft/hcsshim v0.10.0 // indirect
+	github.com/Microsoft/hcsshim v0.11.1 // indirect
 	github.com/ProtonMail/go-crypto v0.0.0-20230528122434-6f98819771a1 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
@@ -101,9 +101,9 @@ require (
 	github.com/chzyer/readline v1.5.1 // indirect
 	github.com/cilium/ebpf v0.9.1 // indirect
 	github.com/cloudflare/circl v1.3.3 // indirect
-	github.com/containerd/cgroups/v3 v3.0.2 // indirect
 	github.com/containerd/console v1.0.3 // indirect
 	github.com/containerd/go-runc v1.0.0 // indirect
+	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.14.3 // indirect
 	github.com/containerd/typeurl/v2 v2.1.1 // indirect
 	github.com/containers/buildah v1.31.2 // indirect

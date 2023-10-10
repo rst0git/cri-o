@@ -35,8 +35,9 @@ github.com/Microsoft/go-winio/internal/fs
 github.com/Microsoft/go-winio/internal/socket
 github.com/Microsoft/go-winio/internal/stringbuffer
 github.com/Microsoft/go-winio/pkg/guid
+github.com/Microsoft/go-winio/tools/mkwinsyscall
 github.com/Microsoft/go-winio/vhd
-# github.com/Microsoft/hcsshim v0.10.0
+# github.com/Microsoft/hcsshim v0.11.1
 ## explicit; go 1.18
 github.com/Microsoft/hcsshim
 github.com/Microsoft/hcsshim/computestorage
@@ -155,13 +156,10 @@ github.com/container-orchestrated-devices/container-device-interface/specs-go
 # github.com/containerd/cgroups v1.1.0
 ## explicit; go 1.17
 github.com/containerd/cgroups/stats/v1
-# github.com/containerd/cgroups/v3 v3.0.2
-## explicit; go 1.18
-github.com/containerd/cgroups/v3/cgroup1/stats
 # github.com/containerd/console v1.0.3
 ## explicit; go 1.13
 github.com/containerd/console
-# github.com/containerd/containerd v1.7.2
+# github.com/containerd/containerd v1.7.7
 ## explicit; go 1.19
 github.com/containerd/containerd/api/runtime/task/v2
 github.com/containerd/containerd/api/services/ttrpc/events/v1
@@ -176,6 +174,7 @@ github.com/containerd/containerd/filters
 github.com/containerd/containerd/identifiers
 github.com/containerd/containerd/log
 github.com/containerd/containerd/namespaces
+github.com/containerd/containerd/pkg/atomicfile
 github.com/containerd/containerd/pkg/cri/constants
 github.com/containerd/containerd/pkg/cri/io
 github.com/containerd/containerd/pkg/cri/util
@@ -203,7 +202,10 @@ github.com/containerd/fifo
 # github.com/containerd/go-runc v1.0.0
 ## explicit; go 1.13
 github.com/containerd/go-runc
-# github.com/containerd/nri v0.3.1-0.20230504231226-94185418e253
+# github.com/containerd/log v0.1.0
+## explicit; go 1.20
+github.com/containerd/log
+# github.com/containerd/nri v0.4.0
 ## explicit; go 1.19
 github.com/containerd/nri/pkg/adaptation
 github.com/containerd/nri/pkg/api
