@@ -1,3 +1,6 @@
+// Code created by gotmpl. DO NOT MODIFY.
+// source: internal/shared/otlp/envconfig/envconfig.go.tmpl
+
 // Copyright The OpenTelemetry Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package envconfig // import "go.opentelemetry.io/otel/exporters/otlp/internal/envconfig"
+package envconfig // import "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/envconfig"
 
 import (
 	"crypto/tls"
@@ -171,13 +174,13 @@ func stringToHeader(value string) map[string]string {
 			global.Error(errors.New("missing '="), "parse headers", "input", header)
 			continue
 		}
-		name, err := url.QueryUnescape(n)
+		name, err := url.PathUnescape(n)
 		if err != nil {
 			global.Error(err, "escape header key", "key", n)
 			continue
 		}
 		trimmedName := strings.TrimSpace(name)
-		value, err := url.QueryUnescape(v)
+		value, err := url.PathUnescape(v)
 		if err != nil {
 			global.Error(err, "escape header value", "value", v)
 			continue
