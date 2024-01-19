@@ -47,8 +47,3 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 	}
 	return stats, nil
 }
-
-// GetOnlineCPUs returns the number of online CPUs as set in the container cpu-set using sched_getaffinity
-func GetOnlineCPUs(container *Container) (int, error) {
-	return getOnlineCPUs(container)
-}

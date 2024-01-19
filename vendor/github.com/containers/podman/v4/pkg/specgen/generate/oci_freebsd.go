@@ -4,7 +4,6 @@ package generate
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/containers/common/libimage"
@@ -18,22 +17,7 @@ import (
 
 // SpecGenToOCI returns the base configuration for the container.
 func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runtime, rtc *config.Config, newImage *libimage.Image, mounts []spec.Mount, pod *libpod.Pod, finalCmd []string, compatibleOptions *libpod.InfraInherit) (*spec.Spec, error) {
-	var imageOs string
-	if newImage != nil {
-		inspectData, err := newImage.Inspect(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		imageOs = inspectData.Os
-	} else {
-		imageOs = "freebsd"
-	}
-
-	if imageOs != "freebsd" && imageOs != "linux" {
-		return nil, fmt.Errorf("unsupported image OS: %s", imageOs)
-	}
-
-	g, err := generate.New(imageOs)
+	g, err := generate.New("freebsd")
 	if err != nil {
 		return nil, err
 	}
@@ -65,51 +49,6 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 		return nil, err
 	}
 
-	// Linux emulatioon
-	if imageOs == "linux" {
-		var mounts []spec.Mount
-		for _, m := range configSpec.Mounts {
-			switch m.Destination {
-			case "/proc":
-				m.Type = "linprocfs"
-				m.Options = []string{"nodev"}
-				mounts = append(mounts, m)
-				continue
-			case "/sys":
-				m.Type = "linsysfs"
-				m.Options = []string{"nodev"}
-				mounts = append(mounts, m)
-				continue
-			case "/dev", "/dev/pts", "/dev/shm", "/dev/mqueue":
-				continue
-			}
-		}
-		mounts = append(mounts,
-			spec.Mount{
-				Destination: "/dev",
-				Type:        "devfs",
-				Source:      "devfs",
-				Options: []string{
-					"ruleset=4",
-					"rule=path shm unhide mode 1777",
-				},
-			},
-			spec.Mount{
-				Destination: "/dev/fd",
-				Type:        "fdescfs",
-				Source:      "fdesc",
-				Options:     []string{},
-			},
-			spec.Mount{
-				Destination: "/dev/shm",
-				Type:        define.TypeTmpfs,
-				Source:      "shm",
-				Options:     []string{"notmpcopyup"},
-			},
-		)
-		configSpec.Mounts = mounts
-	}
-
 	// BIND MOUNTS
 	configSpec.Mounts = SupersedeUserMounts(mounts, configSpec.Mounts)
 	// Process mounts to ensure correct options
@@ -124,6 +63,8 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 
 	if s.Remove {
 		configSpec.Annotations[define.InspectAnnotationAutoremove] = define.InspectResponseTrue
+	} else {
+		configSpec.Annotations[define.InspectAnnotationAutoremove] = define.InspectResponseFalse
 	}
 
 	if len(s.VolumesFrom) > 0 {
@@ -132,10 +73,14 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 
 	if s.Privileged {
 		configSpec.Annotations[define.InspectAnnotationPrivileged] = define.InspectResponseTrue
+	} else {
+		configSpec.Annotations[define.InspectAnnotationPrivileged] = define.InspectResponseFalse
 	}
 
 	if s.Init {
 		configSpec.Annotations[define.InspectAnnotationInit] = define.InspectResponseTrue
+	} else {
+		configSpec.Annotations[define.InspectAnnotationInit] = define.InspectResponseFalse
 	}
 
 	if s.OOMScoreAdj != nil {

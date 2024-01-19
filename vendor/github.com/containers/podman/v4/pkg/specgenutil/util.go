@@ -282,11 +282,6 @@ func CreateExitCommandArgs(storageConfig storageTypes.StoreOptions, config *conf
 		"--network-config-dir", config.Network.NetworkConfigDir,
 		"--network-backend", config.Network.NetworkBackend,
 		"--volumepath", config.Engine.VolumePath,
-		"--db-backend", config.Engine.DBBackend,
-		fmt.Sprintf("--transient-store=%t", storageConfig.TransientStore),
-	}
-	if storageConfig.ImageStore != "" {
-		command = append(command, []string{"--imagestore", storageConfig.ImageStore}...)
 	}
 	if config.Engine.OCIRuntime != "" {
 		command = append(command, []string{"--runtime", config.Engine.OCIRuntime}...)

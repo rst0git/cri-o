@@ -257,7 +257,7 @@ func (r *ConmonOCIRuntime) UpdateContainerStatus(ctr *Container) error {
 	if err != nil {
 		return fmt.Errorf("reading stdout: %s: %w", ctr.ID(), err)
 	}
-	if err := json.NewDecoder(bytes.NewReader(out)).Decode(state); err != nil {
+	if err := json.NewDecoder(bytes.NewBuffer(out)).Decode(state); err != nil {
 		return fmt.Errorf("decoding container status for container %s: %w", ctr.ID(), err)
 	}
 	ctr.state.PID = state.Pid
@@ -343,7 +343,7 @@ func generateResourceFile(res *spec.LinuxResources) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	_, err = f.Write(j)
+	_, err = f.WriteString(string(j))
 	if err != nil {
 		return "", nil, err
 	}
@@ -356,20 +356,10 @@ func generateResourceFile(res *spec.LinuxResources) (string, []string, error) {
 // If all is set, send to all PIDs in the container.
 // All is only supported if the container created cgroups.
 func (r *ConmonOCIRuntime) KillContainer(ctr *Container, signal uint, all bool) error {
-	if _, err := r.killContainer(ctr, signal, all, false); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// If captureStderr is requested, OCI runtime STDERR will be captured as a
-// *bytes.buffer and returned; otherwise, it is set to os.Stderr.
-func (r *ConmonOCIRuntime) killContainer(ctr *Container, signal uint, all, captureStderr bool) (*bytes.Buffer, error) {
 	logrus.Debugf("Sending signal %d to container %s", signal, ctr.ID())
 	runtimeDir, err := util.GetRuntimeDir()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	env := []string{fmt.Sprintf("XDG_RUNTIME_DIR=%s", runtimeDir)}
 	var args []string
@@ -379,27 +369,19 @@ func (r *ConmonOCIRuntime) killContainer(ctr *Container, signal uint, all, captu
 	} else {
 		args = append(args, "kill", ctr.ID(), fmt.Sprintf("%d", signal))
 	}
-	var (
-		stderr       io.Writer = os.Stderr
-		stderrBuffer *bytes.Buffer
-	)
-	if captureStderr {
-		stderrBuffer = new(bytes.Buffer)
-		stderr = stderrBuffer
-	}
-	if err := utils.ExecCmdWithStdStreams(os.Stdin, os.Stdout, stderr, env, r.path, args...); err != nil {
+	if err := utils.ExecCmdWithStdStreams(os.Stdin, os.Stdout, os.Stderr, env, r.path, args...); err != nil {
 		// Update container state - there's a chance we failed because
 		// the container exited in the meantime.
 		if err2 := r.UpdateContainerStatus(ctr); err2 != nil {
 			logrus.Infof("Error updating status for container %s: %v", ctr.ID(), err2)
 		}
 		if ctr.ensureState(define.ContainerStateStopped, define.ContainerStateExited) {
-			return stderrBuffer, fmt.Errorf("%w: %s", define.ErrCtrStateInvalid, ctr.state.State)
+			return define.ErrCtrStateInvalid
 		}
-		return stderrBuffer, fmt.Errorf("sending signal to container %s: %w", ctr.ID(), err)
+		return fmt.Errorf("sending signal to container %s: %w", ctr.ID(), err)
 	}
 
-	return stderrBuffer, nil
+	return nil
 }
 
 // StopContainer stops a container, first using its given stop signal (or
@@ -418,64 +400,23 @@ func (r *ConmonOCIRuntime) StopContainer(ctr *Container, timeout uint, all bool)
 		return nil
 	}
 
-	killCtr := func(signal uint) (bool, error) {
-		stderr, err := r.killContainer(ctr, signal, all, true)
+	stopSignal := ctr.config.StopSignal
+	if stopSignal == 0 {
+		stopSignal = uint(syscall.SIGTERM)
+	}
 
-		// Before handling error from KillContainer, convert STDERR to a []string
-		// (one string per line of output) and print it, ignoring known OCI runtime
-		// errors that we don't care about
-		stderrLines := strings.Split(stderr.String(), "\n")
-		for _, line := range stderrLines {
-			if line == "" {
-				continue
-			}
-			if strings.Contains(line, "container not running") || strings.Contains(line, "open pidfd: No such process") || strings.Contains(line, "kill container: No such process") {
-				logrus.Debugf("Failure to kill container (already stopped?): logged %s", line)
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "%s\n", line)
-		}
-
-		if err != nil {
-			// There's an inherent race with the cleanup process (see
-			// #16142, #17142). If the container has already been marked as
-			// stopped or exited by the cleanup process, we can return
-			// immediately.
-			if errors.Is(err, define.ErrCtrStateInvalid) && ctr.ensureState(define.ContainerStateStopped, define.ContainerStateExited) {
-				return true, nil
-			}
-
-			// If the PID is 0, then the container is already stopped.
-			if ctr.state.PID == 0 {
-				return true, nil
-			}
-
+	if timeout > 0 {
+		if err := r.KillContainer(ctr, stopSignal, all); err != nil {
 			// Is the container gone?
 			// If so, it probably died between the first check and
 			// our sending the signal
 			// The container is stopped, so exit cleanly
 			err := unix.Kill(ctr.state.PID, 0)
 			if err == unix.ESRCH {
-				return true, nil
+				return nil
 			}
 
-			return false, err
-		}
-		return false, nil
-	}
-
-	if timeout > 0 {
-		stopSignal := ctr.config.StopSignal
-		if stopSignal == 0 {
-			stopSignal = uint(syscall.SIGTERM)
-		}
-
-		stopped, err := killCtr(stopSignal)
-		if err != nil {
 			return err
-		}
-		if stopped {
-			return nil
 		}
 
 		if err := waitContainerStop(ctr, time.Duration(timeout)*time.Second); err != nil {
@@ -487,12 +428,12 @@ func (r *ConmonOCIRuntime) StopContainer(ctr *Container, timeout uint, all bool)
 		}
 	}
 
-	stopped, err := killCtr(uint(unix.SIGKILL))
-	if err != nil {
+	if err := r.KillContainer(ctr, uint(unix.SIGKILL), all); err != nil {
+		// Again, check if the container is gone. If it is, exit cleanly.
+		if aliveErr := unix.Kill(ctr.state.PID, 0); errors.Is(aliveErr, unix.ESRCH) {
+			return nil
+		}
 		return fmt.Errorf("sending SIGKILL to container %s: %w", ctr.ID(), err)
-	}
-	if stopped {
-		return nil
 	}
 
 	// Give runtime a few seconds to make it happen
@@ -552,7 +493,10 @@ func socketCloseWrite(conn *net.UnixConn) error {
 // Returns any errors that occurred, and whether the connection was successfully
 // hijacked before that error occurred.
 func (r *ConmonOCIRuntime) HTTPAttach(ctr *Container, req *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, detachKeys *string, cancel <-chan bool, hijackDone chan<- bool, streamAttach, streamLogs bool) (deferredErr error) {
-	isTerminal := ctr.Terminal()
+	isTerminal := false
+	if ctr.config.Spec.Process != nil {
+		isTerminal = ctr.config.Spec.Process.Terminal
+	}
 
 	if streams != nil {
 		if !streams.Stdin && !streams.Stdout && !streams.Stderr {
@@ -653,10 +597,6 @@ func (r *ConmonOCIRuntime) HTTPAttach(ctr *Container, req *http.Request, w http.
 					device := logLine.Device
 					var header []byte
 					headerLen := uint32(len(logLine.Msg))
-					if !logLine.Partial() {
-						// we append an extra newline in this case so we need to increment the len as well
-						headerLen++
-					}
 					logSize += len(logLine.Msg)
 					switch strings.ToLower(device) {
 					case "stdin":
@@ -945,8 +885,8 @@ func (r *ConmonOCIRuntime) ExitFilePath(ctr *Container) (string, error) {
 
 // RuntimeInfo provides information on the runtime.
 func (r *ConmonOCIRuntime) RuntimeInfo() (*define.ConmonInfo, *define.OCIRuntimeInfo, error) {
-	runtimePackage := cutil.PackageVersion(r.path)
-	conmonPackage := cutil.PackageVersion(r.conmonPath)
+	runtimePackage := packageVersion(r.path)
+	conmonPackage := packageVersion(r.conmonPath)
 	runtimeVersion, err := r.getOCIRuntimeVersion()
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting version of OCI runtime %s: %w", r.name, err)
@@ -999,20 +939,31 @@ func waitContainerStop(ctr *Container, timeout time.Duration) error {
 
 // Wait for a given PID to stop
 func waitPidStop(pid int, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	for {
-		select {
-		case <-timer.C:
-			return fmt.Errorf("given PID did not die within timeout")
-		default:
-			if err := unix.Kill(pid, 0); err != nil {
-				if err == unix.ESRCH {
-					return nil
+	done := make(chan struct{})
+	chControl := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-chControl:
+				return
+			default:
+				if err := unix.Kill(pid, 0); err != nil {
+					if err == unix.ESRCH {
+						close(done)
+						return
+					}
+					logrus.Errorf("Pinging PID %d with signal 0: %v", pid, err)
 				}
-				logrus.Errorf("Pinging PID %d with signal 0: %v", pid, err)
+				time.Sleep(100 * time.Millisecond)
 			}
-			time.Sleep(10 * time.Millisecond)
 		}
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		close(chControl)
+		return fmt.Errorf("given PIDs did not die within timeout")
 	}
 }
 
@@ -1087,7 +1038,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		args = append(args, fmt.Sprintf("--sdnotify-socket=%s", ctr.config.SdNotifySocket))
 	}
 
-	if ctr.Terminal() {
+	if ctr.config.Spec.Process.Terminal {
 		args = append(args, "-t")
 	} else if ctr.config.Stdin {
 		args = append(args, "-i")
@@ -1184,7 +1135,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if ctr.Terminal() {
+	if ctr.config.Spec.Process.Terminal {
 		cmd.Stderr = &stderrBuf
 	}
 
@@ -1233,13 +1184,16 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 			if err != nil {
 				return 0, fmt.Errorf("failed to create rootless network sync pipe: %w", err)
 			}
+		} else {
+			if ctr.rootlessSlirpSyncR != nil {
+				defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncR)
+			}
+			if ctr.rootlessSlirpSyncW != nil {
+				defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncW)
+			}
 		}
-
-		if ctr.rootlessSlirpSyncW != nil {
-			defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncW)
-			// Leak one end in conmon, the other one will be leaked into slirp4netns
-			cmd.ExtraFiles = append(cmd.ExtraFiles, ctr.rootlessSlirpSyncW)
-		}
+		// Leak one end in conmon, the other one will be leaked into slirp4netns
+		cmd.ExtraFiles = append(cmd.ExtraFiles, ctr.rootlessSlirpSyncW)
 
 		if ctr.rootlessPortSyncW != nil {
 			defer errorhandling.CloseQuiet(ctr.rootlessPortSyncW)
@@ -1366,7 +1320,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 	case define.PassthroughLogging:
 		logDriverArg = define.PassthroughLogging
 	//lint:ignore ST1015 the default case has to be here
-	default: //nolint:gocritic
+	default: //nolint:stylecheck,gocritic
 		// No case here should happen except JSONLogging, but keep this here in case the options are extended
 		logrus.Errorf("%s logging specified but not supported. Choosing k8s-file logging instead", ctr.LogDriver())
 		fallthrough
@@ -1384,8 +1338,10 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 	logLevel := logrus.GetLevel()
 	args = append(args, "--log-level", logLevel.String())
 
-	logrus.Debugf("%s messages will be logged to syslog", r.conmonPath)
-	args = append(args, "--syslog")
+	if logLevel == logrus.DebugLevel {
+		logrus.Debugf("%s messages will be logged to syslog", r.conmonPath)
+		args = append(args, "--syslog")
+	}
 
 	size := r.logSizeMax
 	if ctr.config.LogSize > 0 {
@@ -1485,7 +1441,7 @@ func readConmonPipeData(runtimeName string, pipe *os.File, ociLog string) (int, 
 		ch <- syncStruct{si: si}
 	}()
 
-	var data int
+	data := -1 //nolint: wastedassign
 	select {
 	case ss := <-ch:
 		if ss.err != nil {

@@ -1,5 +1,5 @@
-//go:build linux || darwin || freebsd
-// +build linux darwin freebsd
+//go:build linux || darwin
+// +build linux darwin
 
 package utils
 
@@ -175,7 +175,7 @@ func moveUnderCgroup(cgroup, subtree string, processes []uint32) error {
 
 		if len(processes) > 0 {
 			for _, pid := range processes {
-				if _, err := f.WriteString(fmt.Sprintf("%d\n", pid)); err != nil {
+				if _, err := f.Write([]byte(fmt.Sprintf("%d\n", pid))); err != nil {
 					logrus.Debugf("Cannot move process %d to cgroup %q: %v", pid, newCgroup, err)
 				}
 			}

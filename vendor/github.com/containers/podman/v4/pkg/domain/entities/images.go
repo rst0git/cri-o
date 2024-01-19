@@ -7,9 +7,7 @@ import (
 
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/image/v5/signature/signer"
 	"github.com/containers/image/v5/types"
-	encconfig "github.com/containers/ocicrypt/config"
 	"github.com/containers/podman/v4/pkg/inspect"
 	"github.com/containers/podman/v4/pkg/trust"
 	"github.com/docker/docker/api/types/container"
@@ -160,9 +158,6 @@ type ImagePullOptions struct {
 	PullPolicy config.PullPolicy
 	// Writer is used to display copy information including progress bars.
 	Writer io.Writer
-	// OciDecryptConfig contains the config that can be used to decrypt an image if it is
-	// encrypted if non-nil. If nil, it does not attempt to decrypt an image.
-	OciDecryptConfig *encconfig.DecryptConfig
 }
 
 // ImagePullReport is the response from pulling one or more images.
@@ -179,7 +174,7 @@ type ImagePullReport struct {
 
 // ImagePushOptions are the arguments for pushing images.
 type ImagePushOptions struct {
-	// All indicates that all images referenced in a manifest list should be pushed
+	// All indicates that all images referenced in an manifest list should be pushed
 	All bool
 	// Authfile is the path to the authentication file. Ignored for remote
 	// calls.
@@ -195,6 +190,9 @@ type ImagePushOptions struct {
 	Username string
 	// Password for authenticating against the registry.
 	Password string
+	// DigestFile, after copying the image, write the digest of the resulting
+	// image to the file.  Ignored for remote calls.
+	DigestFile string
 	// Format is the Manifest type (oci, v2s1, or v2s2) to use when pushing an
 	// image. Default is manifest type of source, with fallbacks.
 	// Ignored for remote calls.
@@ -208,10 +206,6 @@ type ImagePushOptions struct {
 	RemoveSignatures bool
 	// SignaturePolicy to use when pulling.  Ignored for remote calls.
 	SignaturePolicy string
-	// Signers, if non-empty, asks for signatures to be added during the copy
-	// using the provided signers.
-	// Rejected for remote calls.
-	Signers []*signer.Signer
 	// SignBy adds a signature at the destination using the specified key.
 	// Ignored for remote calls.
 	SignBy string
@@ -231,32 +225,13 @@ type ImagePushOptions struct {
 	Progress chan types.ProgressProperties
 	// CompressionFormat is the format to use for the compression of the blobs
 	CompressionFormat string
-	// CompressionLevel is the level to use for the compression of the blobs
-	CompressionLevel *int
 	// Writer is used to display copy information including progress bars.
 	Writer io.Writer
-	// OciEncryptConfig when non-nil indicates that an image should be encrypted.
-	// The encryption options is derived from the construction of EncryptConfig object.
-	OciEncryptConfig *encconfig.EncryptConfig
-	// OciEncryptLayers represents the list of layers to encrypt.
-	// If nil, don't encrypt any layers.
-	// If non-nil and len==0, denotes encrypt all layers.
-	// integers in the slice represent 0-indexed layer indices, with support for negative
-	// indexing. i.e. 0 is the first layer, -1 is the last (top-most) layer.
-	OciEncryptLayers *[]int
 }
 
 // ImagePushReport is the response from pushing an image.
+// Currently only used in the remote API.
 type ImagePushReport struct {
-	// The digest of the manifest of the pushed image.
-	ManifestDigest string
-}
-
-// ImagePushStream is the response from pushing an image. Only used in the
-// remote API.
-type ImagePushStream struct {
-	// ManifestDigest is the digest of the manifest of the pushed image.
-	ManifestDigest string `json:"manifestdigest,omitempty"`
 	// Stream used to provide push progress
 	Stream string `json:"stream,omitempty"`
 	// Error contains text of errors from pushing
@@ -268,16 +243,6 @@ type ImageSearchOptions struct {
 	// Authfile is the path to the authentication file. Ignored for remote
 	// calls.
 	Authfile string
-	// CertDir is the path to certificate directories.  Ignored for remote
-	// calls.
-	CertDir string
-	// Username for authenticating against the registry.
-	Username string
-	// Password for authenticating against the registry.
-	Password string
-	// IdentityToken is used to authenticate the user and get
-	// an access token for the registry.
-	IdentityToken string
 	// Filters for the search results.
 	Filters []string
 	// Limit the number of results.

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/common/pkg/util"
 	"github.com/containers/podman/v4/libpod/define"
 	"github.com/containers/podman/v4/libpod/events"
 	"github.com/containers/storage/pkg/stringid"
@@ -21,7 +20,7 @@ import (
 
 // ExecConfig contains the configuration of an exec session
 type ExecConfig struct {
-	// Command is the command that will be invoked in the exec session.
+	// Command the the command that will be invoked in the exec session.
 	// Must not be empty.
 	Command []string `json:"command"`
 	// Terminal is whether the exec session will allocate a pseudoterminal.
@@ -924,7 +923,7 @@ func (c *Container) readExecExitCode(sessionID string) (int, error) {
 	chWait := make(chan error)
 	defer close(chWait)
 
-	_, err := util.WaitForFile(exitFile, chWait, time.Second*5)
+	_, err := WaitForFile(exitFile, chWait, time.Second*5)
 	if err != nil {
 		return -1, err
 	}
@@ -1073,6 +1072,14 @@ func (c *Container) removeAllExecSessions() error {
 	}
 	c.state.ExecSessions = nil
 	c.state.LegacyExecSessions = nil
+	if err := c.save(); err != nil {
+		if !errors.Is(err, define.ErrCtrRemoved) {
+			if lastErr != nil {
+				logrus.Errorf("Stopping container %s exec sessions: %v", c.ID(), lastErr)
+			}
+			lastErr = err
+		}
+	}
 
 	return lastErr
 }

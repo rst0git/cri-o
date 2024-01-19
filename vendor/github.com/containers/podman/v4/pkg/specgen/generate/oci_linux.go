@@ -38,7 +38,7 @@ func canMountSys(isRootless, isNewUserns bool, s *specgen.SpecGenerator) bool {
 	}
 	if isNewUserns {
 		switch s.NetNS.NSMode {
-		case specgen.Slirp, specgen.Pasta, specgen.Private, specgen.NoNetwork, specgen.Bridge:
+		case specgen.Slirp, specgen.Private, specgen.NoNetwork, specgen.Bridge:
 			return true
 		default:
 			return false
@@ -47,7 +47,7 @@ func canMountSys(isRootless, isNewUserns bool, s *specgen.SpecGenerator) bool {
 	return true
 }
 
-func getCgroupPermissions(unmask []string) string {
+func getCgroupPermissons(unmask []string) string {
 	ro := "ro"
 	rw := "rw"
 	cgroup := "/sys/fs/cgroup"
@@ -57,7 +57,7 @@ func getCgroupPermissions(unmask []string) string {
 		return ro
 	}
 
-	if len(unmask) != 0 && unmask[0] == "ALL" {
+	if unmask != nil && unmask[0] == "ALL" {
 		return rw
 	}
 
@@ -71,7 +71,7 @@ func getCgroupPermissions(unmask []string) string {
 
 // SpecGenToOCI returns the base configuration for the container.
 func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runtime, rtc *config.Config, newImage *libimage.Image, mounts []spec.Mount, pod *libpod.Pod, finalCmd []string, compatibleOptions *libpod.InfraInherit) (*spec.Spec, error) {
-	cgroupPerm := getCgroupPermissions(s.Unmask)
+	cgroupPerm := getCgroupPermissons(s.Unmask)
 
 	g, err := generate.New("linux")
 	if err != nil {
@@ -83,7 +83,7 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 	addCgroup := true
 
 	isRootless := rootless.IsRootless()
-	isNewUserns := s.UserNS.IsContainer() || s.UserNS.IsPath() || s.UserNS.IsPrivate() || s.UserNS.IsPod() || s.UserNS.IsAuto()
+	isNewUserns := s.UserNS.IsContainer() || s.UserNS.IsPath() || s.UserNS.IsPrivate()
 
 	canMountSys := canMountSys(isRootless, isNewUserns, s)
 
@@ -107,19 +107,11 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 		}
 		sysMnt := spec.Mount{
 			Destination: "/sys",
-			Type:        define.TypeBind,
+			Type:        "bind", // should we use a constant for this, like createconfig?
 			Source:      "/sys",
 			Options:     []string{"rprivate", "nosuid", "noexec", "nodev", r, "rbind"},
 		}
 		g.AddMount(sysMnt)
-		g.RemoveMount("/sys/fs/cgroup")
-		sysFsCgroupMnt := spec.Mount{
-			Destination: "/sys/fs/cgroup",
-			Type:        define.TypeBind,
-			Source:      "/sys/fs/cgroup",
-			Options:     []string{"rprivate", "nosuid", "noexec", "nodev", r, "rbind"},
-		}
-		g.AddMount(sysFsCgroupMnt)
 		if !s.Privileged && isRootless {
 			g.AddLinuxMaskedPaths("/sys/kernel")
 		}
@@ -151,8 +143,8 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 		g.RemoveMount("/dev/pts")
 		devPts := spec.Mount{
 			Destination: "/dev/pts",
-			Type:        define.TypeDevpts,
-			Source:      define.TypeDevpts,
+			Type:        "devpts",
+			Source:      "devpts",
 			Options:     []string{"rprivate", "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"},
 		}
 		g.AddMount(devPts)
@@ -164,9 +156,9 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 		g.RemoveMount("/dev/mqueue")
 		devMqueue := spec.Mount{
 			Destination: "/dev/mqueue",
-			Type:        define.TypeBind, // constant ?
+			Type:        "bind", // constant ?
 			Source:      "/dev/mqueue",
-			Options:     []string{define.TypeBind, "nosuid", "noexec", "nodev"},
+			Options:     []string{"bind", "nosuid", "noexec", "nodev"},
 		}
 		g.AddMount(devMqueue)
 	}
@@ -255,10 +247,7 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 	s.HostDeviceList = userDevices
 
 	// set the devices cgroup when not running in a user namespace
-	if isRootless && len(s.DeviceCgroupRule) > 0 {
-		return nil, fmt.Errorf("device cgroup rules are not supported in rootless mode or in a user namespace")
-	}
-	if !isRootless && !s.Privileged {
+	if !inUserNS && !s.Privileged {
 		for _, dev := range s.DeviceCgroupRule {
 			g.AddLinuxResourcesDevice(true, dev.Type, dev.Major, dev.Minor, dev.Access)
 		}
@@ -297,6 +286,8 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 
 	if s.Remove {
 		configSpec.Annotations[define.InspectAnnotationAutoremove] = define.InspectResponseTrue
+	} else {
+		configSpec.Annotations[define.InspectAnnotationAutoremove] = define.InspectResponseFalse
 	}
 
 	if len(s.VolumesFrom) > 0 {
@@ -305,10 +296,14 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 
 	if s.Privileged {
 		configSpec.Annotations[define.InspectAnnotationPrivileged] = define.InspectResponseTrue
+	} else {
+		configSpec.Annotations[define.InspectAnnotationPrivileged] = define.InspectResponseFalse
 	}
 
 	if s.Init {
 		configSpec.Annotations[define.InspectAnnotationInit] = define.InspectResponseTrue
+	} else {
+		configSpec.Annotations[define.InspectAnnotationInit] = define.InspectResponseFalse
 	}
 
 	if s.OOMScoreAdj != nil {
