@@ -2,14 +2,11 @@ package chunked
 
 import (
 	archivetar "archive/tar"
-	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 
-	"github.com/containerd/stargz-snapshotter/estargz"
 	"github.com/containers/storage/pkg/chunked/internal"
 	"github.com/klauspost/compress/zstd"
 	"github.com/klauspost/pgzip"
@@ -35,14 +32,7 @@ func typeToTarType(t string) (byte, error) {
 	return r, nil
 }
 
-func isZstdChunkedFrameMagic(data []byte) bool {
-	if len(data) < 8 {
-		return false
-	}
-	return bytes.Equal(internal.ZstdChunkedFrameMagic, data[:8])
-}
-
-func readEstargzChunkedManifest(blobStream ImageSourceSeekable, blobSize int64, annotations map[string]string) ([]byte, int64, error) {
+func readEstargzChunkedManifest(blobStream ImageSourceSeekable, blobSize int64, tocDigest digest.Digest) ([]byte, int64, error) {
 	// information on the format here https://github.com/containerd/stargz-snapshotter/blob/main/docs/stargz-estargz.md
 	footerSize := int64(51)
 	if blobSize <= footerSize {
@@ -135,107 +125,53 @@ func readEstargzChunkedManifest(blobStream ImageSourceSeekable, blobSize int64, 
 		return nil, 0, err
 	}
 
-	d, err := digest.Parse(annotations[estargz.TOCJSONDigestAnnotation])
-	if err != nil {
-		return nil, 0, err
-	}
-	if manifestDigester.Digest() != d {
+	if manifestDigester.Digest() != tocDigest {
 		return nil, 0, errors.New("invalid manifest checksum")
 	}
 
 	return manifestUncompressed, tocOffset, nil
 }
 
-// readZstdChunkedManifest reads the zstd:chunked manifest from the seekable stream blobStream.  The blob total size must
-// be specified.
-// This function uses the io.github.containers.zstd-chunked. annotations when specified.
-func readZstdChunkedManifest(blobStream ImageSourceSeekable, blobSize int64, annotations map[string]string) ([]byte, []byte, int64, error) {
-	footerSize := int64(internal.FooterSizeSupported)
-	if blobSize <= footerSize {
-		return nil, nil, 0, errors.New("blob too small")
+// readZstdChunkedManifest reads the zstd:chunked manifest from the seekable stream blobStream.
+// Returns (manifest blob, parsed manifest, tar-split blob, manifest offset).
+func readZstdChunkedManifest(blobStream ImageSourceSeekable, tocDigest digest.Digest, annotations map[string]string) ([]byte, *internal.TOC, []byte, int64, error) {
+	offsetMetadata := annotations[internal.ManifestInfoKey]
+	if offsetMetadata == "" {
+		return nil, nil, nil, 0, fmt.Errorf("%q annotation missing", internal.ManifestInfoKey)
 	}
-
-	manifestChecksumAnnotation := annotations[internal.ManifestChecksumKey]
-	if manifestChecksumAnnotation == "" {
-		return nil, nil, 0, fmt.Errorf("manifest checksum annotation %q not found", internal.ManifestChecksumKey)
+	var manifestChunk ImageSourceChunk
+	var manifestLengthUncompressed, manifestType uint64
+	if _, err := fmt.Sscanf(offsetMetadata, "%d:%d:%d:%d", &manifestChunk.Offset, &manifestChunk.Length, &manifestLengthUncompressed, &manifestType); err != nil {
+		return nil, nil, nil, 0, err
 	}
-
-	var offset, length, lengthUncompressed, manifestType uint64
-
-	var offsetTarSplit, lengthTarSplit, lengthUncompressedTarSplit uint64
-	tarSplitChecksumAnnotation := ""
-
-	if offsetMetadata := annotations[internal.ManifestInfoKey]; offsetMetadata != "" {
-		if _, err := fmt.Sscanf(offsetMetadata, "%d:%d:%d:%d", &offset, &length, &lengthUncompressed, &manifestType); err != nil {
-			return nil, nil, 0, err
-		}
-
-		if tarSplitInfoKeyAnnotation, found := annotations[internal.TarSplitInfoKey]; found {
-			if _, err := fmt.Sscanf(tarSplitInfoKeyAnnotation, "%d:%d:%d", &offsetTarSplit, &lengthTarSplit, &lengthUncompressedTarSplit); err != nil {
-				return nil, nil, 0, err
-			}
-			tarSplitChecksumAnnotation = annotations[internal.TarSplitChecksumKey]
-		}
-	} else {
-		chunk := ImageSourceChunk{
-			Offset: uint64(blobSize - footerSize),
-			Length: uint64(footerSize),
-		}
-		parts, errs, err := blobStream.GetBlobAt([]ImageSourceChunk{chunk})
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		var reader io.ReadCloser
-		select {
-		case r := <-parts:
-			reader = r
-		case err := <-errs:
-			return nil, nil, 0, err
-		}
-		footer := make([]byte, footerSize)
-		if _, err := io.ReadFull(reader, footer); err != nil {
-			return nil, nil, 0, err
-		}
-
-		offset = binary.LittleEndian.Uint64(footer[0:8])
-		length = binary.LittleEndian.Uint64(footer[8:16])
-		lengthUncompressed = binary.LittleEndian.Uint64(footer[16:24])
-		manifestType = binary.LittleEndian.Uint64(footer[24:32])
-		if !isZstdChunkedFrameMagic(footer[48:56]) {
-			return nil, nil, 0, errors.New("invalid magic number")
+	// The tarSplit… values are valid if tarSplitChunk.Offset > 0
+	var tarSplitChunk ImageSourceChunk
+	var tarSplitLengthUncompressed uint64
+	if tarSplitInfoKeyAnnotation, found := annotations[internal.TarSplitInfoKey]; found {
+		if _, err := fmt.Sscanf(tarSplitInfoKeyAnnotation, "%d:%d:%d", &tarSplitChunk.Offset, &tarSplitChunk.Length, &tarSplitLengthUncompressed); err != nil {
+			return nil, nil, nil, 0, err
 		}
 	}
 
 	if manifestType != internal.ManifestTypeCRFS {
-		return nil, nil, 0, errors.New("invalid manifest type")
+		return nil, nil, nil, 0, errors.New("invalid manifest type")
 	}
 
 	// set a reasonable limit
-	if length > (1<<20)*50 {
-		return nil, nil, 0, errors.New("manifest too big")
+	if manifestChunk.Length > (1<<20)*50 {
+		return nil, nil, nil, 0, errors.New("manifest too big")
 	}
-	if lengthUncompressed > (1<<20)*50 {
-		return nil, nil, 0, errors.New("manifest too big")
-	}
-
-	chunk := ImageSourceChunk{
-		Offset: offset,
-		Length: length,
+	if manifestLengthUncompressed > (1<<20)*50 {
+		return nil, nil, nil, 0, errors.New("manifest too big")
 	}
 
-	chunks := []ImageSourceChunk{chunk}
-
-	if offsetTarSplit > 0 {
-		chunkTarSplit := ImageSourceChunk{
-			Offset: offsetTarSplit,
-			Length: lengthTarSplit,
-		}
-		chunks = append(chunks, chunkTarSplit)
+	chunks := []ImageSourceChunk{manifestChunk}
+	if tarSplitChunk.Offset > 0 {
+		chunks = append(chunks, tarSplitChunk)
 	}
-
 	parts, errs, err := blobStream.GetBlobAt(chunks)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 
 	readBlob := func(len uint64) ([]byte, error) {
@@ -258,34 +194,39 @@ func readZstdChunkedManifest(blobStream ImageSourceSeekable, blobSize int64, ann
 		return blob, nil
 	}
 
-	manifest, err := readBlob(length)
+	manifest, err := readBlob(manifestChunk.Length)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 
-	decodedBlob, err := decodeAndValidateBlob(manifest, lengthUncompressed, manifestChecksumAnnotation)
+	decodedBlob, err := decodeAndValidateBlob(manifest, manifestLengthUncompressed, tocDigest.String())
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, fmt.Errorf("validating and decompressing TOC: %w", err)
 	}
+	toc, err := unmarshalToc(decodedBlob)
+	if err != nil {
+		return nil, nil, nil, 0, fmt.Errorf("unmarshaling TOC: %w", err)
+	}
+
 	decodedTarSplit := []byte{}
-	if offsetTarSplit > 0 {
-		tarSplit, err := readBlob(lengthTarSplit)
+	if tarSplitChunk.Offset > 0 {
+		tarSplit, err := readBlob(tarSplitChunk.Length)
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, err
 		}
 
-		decodedTarSplit, err = decodeAndValidateBlob(tarSplit, lengthUncompressedTarSplit, tarSplitChecksumAnnotation)
+		decodedTarSplit, err = decodeAndValidateBlob(tarSplit, tarSplitLengthUncompressed, toc.TarSplitDigest.String())
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, fmt.Errorf("validating and decompressing tar-split: %w", err)
 		}
 	}
-	return decodedBlob, decodedTarSplit, int64(offset), err
+	return decodedBlob, toc, decodedTarSplit, int64(manifestChunk.Offset), err
 }
 
-func decodeAndValidateBlob(blob []byte, lengthUncompressed uint64, expectedUncompressedChecksum string) ([]byte, error) {
-	d, err := digest.Parse(expectedUncompressedChecksum)
+func decodeAndValidateBlob(blob []byte, lengthUncompressed uint64, expectedCompressedChecksum string) ([]byte, error) {
+	d, err := digest.Parse(expectedCompressedChecksum)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid digest %q: %w", expectedCompressedChecksum, err)
 	}
 
 	blobDigester := d.Algorithm().Digester()

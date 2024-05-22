@@ -18,11 +18,9 @@ import (
 )
 
 type TOC struct {
-	Version int            `json:"version"`
-	Entries []FileMetadata `json:"entries"`
-
-	// internal: used by unmarshalToc
-	StringsBuf bytes.Buffer `json:"-"`
+	Version        int            `json:"version"`
+	Entries        []FileMetadata `json:"entries"`
+	TarSplitDigest digest.Digest  `json:"tarSplitDigest,omitempty"`
 }
 
 type FileMetadata struct {
@@ -47,9 +45,6 @@ type FileMetadata struct {
 	ChunkOffset int64  `json:"chunkOffset,omitempty"`
 	ChunkDigest string `json:"chunkDigest,omitempty"`
 	ChunkType   string `json:"chunkType,omitempty"`
-
-	// internal: computed by mergeTOCEntries.
-	Chunks []*FileMetadata `json:"-"`
 }
 
 const (
@@ -90,8 +85,9 @@ func GetType(t byte) (string, error) {
 const (
 	ManifestChecksumKey = "io.github.containers.zstd-chunked.manifest-checksum"
 	ManifestInfoKey     = "io.github.containers.zstd-chunked.manifest-position"
-	TarSplitChecksumKey = "io.github.containers.zstd-chunked.tarsplit-checksum"
 	TarSplitInfoKey     = "io.github.containers.zstd-chunked.tarsplit-position"
+
+	TarSplitChecksumKey = "io.github.containers.zstd-chunked.tarsplit-checksum" // Deprecated: Use the TOC.TarSplitDigest field instead, this annotation is no longer read nor written.
 
 	// ManifestTypeCRFS is a manifest file compatible with the CRFS TOC file.
 	ManifestTypeCRFS = 1
@@ -99,7 +95,7 @@ const (
 	// FooterSizeSupported is the footer size supported by this implementation.
 	// Newer versions of the image format might increase this value, so reject
 	// any version that is not supported.
-	FooterSizeSupported = 56
+	FooterSizeSupported = 64
 )
 
 var (
@@ -108,7 +104,7 @@ var (
 	// https://tools.ietf.org/html/rfc8478#section-3.1.2
 	skippableFrameMagic = []byte{0x50, 0x2a, 0x4d, 0x18}
 
-	ZstdChunkedFrameMagic = []byte{0x47, 0x6e, 0x55, 0x6c, 0x49, 0x6e, 0x55, 0x78}
+	ZstdChunkedFrameMagic = []byte{0x47, 0x4e, 0x55, 0x6c, 0x49, 0x6e, 0x55, 0x78}
 )
 
 func appendZstdSkippableFrame(dest io.Writer, data []byte) error {
@@ -139,8 +135,9 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 	manifestOffset := offset + zstdSkippableFrameHeader
 
 	toc := TOC{
-		Version: 1,
-		Entries: metadata,
+		Version:        1,
+		Entries:        metadata,
+		TarSplitDigest: tarSplitData.Digest,
 	}
 
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
@@ -176,20 +173,23 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 		return err
 	}
 
-	outMetadata[TarSplitChecksumKey] = tarSplitData.Digest.String()
 	tarSplitOffset := manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
 	outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, len(tarSplitData.Data), tarSplitData.UncompressedSize)
 	if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
 		return err
 	}
 
-	// Store the offset to the manifest and its size in LE order
-	manifestDataLE := make([]byte, FooterSizeSupported)
-	binary.LittleEndian.PutUint64(manifestDataLE, manifestOffset)
-	binary.LittleEndian.PutUint64(manifestDataLE[8*1:], uint64(len(compressedManifest)))
-	binary.LittleEndian.PutUint64(manifestDataLE[8*2:], uint64(len(manifest)))
-	binary.LittleEndian.PutUint64(manifestDataLE[8*3:], uint64(ManifestTypeCRFS))
-	copy(manifestDataLE[8*4:], ZstdChunkedFrameMagic)
+	footer := ZstdChunkedFooterData{
+		ManifestType:               uint64(ManifestTypeCRFS),
+		Offset:                     manifestOffset,
+		LengthCompressed:           uint64(len(compressedManifest)),
+		LengthUncompressed:         uint64(len(manifest)),
+		OffsetTarSplit:             uint64(tarSplitOffset),
+		LengthCompressedTarSplit:   uint64(len(tarSplitData.Data)),
+		LengthUncompressedTarSplit: uint64(tarSplitData.UncompressedSize),
+	}
+
+	manifestDataLE := footerDataToBlob(footer)
 
 	return appendZstdSkippableFrame(dest, manifestDataLE)
 }
@@ -197,4 +197,38 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 func ZstdWriterWithLevel(dest io.Writer, level int) (*zstd.Encoder, error) {
 	el := zstd.EncoderLevelFromZstd(level)
 	return zstd.NewWriter(dest, zstd.WithEncoderLevel(el))
+}
+
+// ZstdChunkedFooterData contains all the data stored in the zstd:chunked footer.
+// This footer exists to make the blobs self-describing, our implementation
+// never reads it:
+// Partial pull security hinges on the TOC digest, and that exists as a layer annotation;
+// so we are relying on the layer annotations anyway, and doing so means we can avoid
+// a round-trip to fetch this binary footer.
+type ZstdChunkedFooterData struct {
+	ManifestType uint64
+
+	Offset             uint64
+	LengthCompressed   uint64
+	LengthUncompressed uint64
+
+	OffsetTarSplit             uint64
+	LengthCompressedTarSplit   uint64
+	LengthUncompressedTarSplit uint64
+	ChecksumAnnotationTarSplit string // Deprecated: This field is not a part of the footer and not used for any purpose.
+}
+
+func footerDataToBlob(footer ZstdChunkedFooterData) []byte {
+	// Store the offset to the manifest and its size in LE order
+	manifestDataLE := make([]byte, FooterSizeSupported)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*0:], footer.Offset)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*1:], footer.LengthCompressed)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*2:], footer.LengthUncompressed)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*3:], footer.ManifestType)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*4:], footer.OffsetTarSplit)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*5:], footer.LengthCompressedTarSplit)
+	binary.LittleEndian.PutUint64(manifestDataLE[8*6:], footer.LengthUncompressedTarSplit)
+	copy(manifestDataLE[8*7:], ZstdChunkedFrameMagic)
+
+	return manifestDataLE
 }
