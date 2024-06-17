@@ -3,6 +3,7 @@ package lib
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -86,6 +87,7 @@ func (c *ContainerServer) ContainerRestore(
 				metadata.PodDumpFile,
 				stats.StatsDump,
 				"bind.mounts",
+				annotations.LogPath,
 			}
 			for _, name := range checkpoint {
 				src := filepath.Join(imageMountPoint, name)
@@ -101,6 +103,26 @@ func (c *ContainerServer) ContainerRestore(
 		}
 		if err := c.restoreFileSystemChanges(ctr, mountPoint); err != nil {
 			return "", err
+		}
+
+		_, err = os.Stat(filepath.Join(ctr.Dir(), annotations.LogPath))
+		if err == nil {
+			src, err := os.Open(filepath.Join(ctr.Dir(), annotations.LogPath))
+			if err != nil {
+				return "", err
+			}
+			defer src.Close()
+			destLogPath := ctrSpec.Config.Annotations[annotations.LogPath]
+			destLog, err := os.Create(destLogPath)
+			if err != nil {
+				return "", err
+			}
+			defer destLog.Close()
+			_, err = io.Copy(destLog, src)
+			if err != nil {
+				return "", err
+			}
+
 		}
 
 		_, err = os.Stat(filepath.Join(ctr.Dir(), "bind.mounts"))
