@@ -1,4 +1,4 @@
-go 1.21
+go 1.24.0
 
 module github.com/cri-o/cri-o
 
@@ -70,7 +70,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.16.0
 	golang.org/x/net v0.14.0
 	golang.org/x/sync v0.3.0
-	golang.org/x/sys v0.11.0
+	golang.org/x/sys v0.41.0
 	google.golang.org/grpc v1.57.0
 	google.golang.org/protobuf v1.31.0
 	k8s.io/api v0.28.1
