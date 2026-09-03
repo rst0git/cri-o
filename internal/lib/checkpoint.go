@@ -30,6 +30,10 @@ type ContainerCheckpointOptions struct {
 	// TargetFile tells the API to read (or write) the checkpoint image
 	// from (or to) the filename set in TargetFile
 	TargetFile string
+	// ContainerIsPaused tells the checkpoint implementation that the caller
+	// owns pause and resume for this container. Pod checkpoint uses this to keep
+	// every selected container paused until all of them have been captured.
+	ContainerIsPaused bool
 }
 
 // ContainerCheckpoint checkpoints a running container.
@@ -51,8 +55,18 @@ func (c *ContainerServer) ContainerCheckpoint(
 	}
 
 	cStatus := ctr.State()
-	if cStatus.Status != oci.ContainerStateRunning {
-		return "", fmt.Errorf("container %s is not running", ctr.ID())
+
+	expectedState := rspec.ContainerState(oci.ContainerStateRunning)
+	if opts.ContainerIsPaused {
+		expectedState = rspec.ContainerState(oci.ContainerStatePaused)
+	}
+
+	if cStatus.Status != expectedState {
+		if !opts.ContainerIsPaused {
+			return "", fmt.Errorf("container %s is not running", ctr.ID())
+		}
+
+		return "", fmt.Errorf("container %s is %s, expected %s", ctr.ID(), cStatus.Status, expectedState)
 	}
 
 	// At this point the container needs to be paused. As we first checkpoint
@@ -65,8 +79,11 @@ func (c *ContainerServer) ContainerCheckpoint(
 	// to freeze the processes. CRIU will also use the cgroup freezer to freeze
 	// the processes if possible. If the cgroup is already frozen by runc/crun
 	// CRIU will not change the freezer status.
-	if err = c.runtime.PauseContainer(ctx, ctr); err != nil {
-		return "", fmt.Errorf("failed to pause container %q before checkpointing: %w", ctr.ID(), err)
+	pausedByUs := !opts.ContainerIsPaused
+	if pausedByUs {
+		if err = c.runtime.PauseContainer(ctx, ctr); err != nil {
+			return "", fmt.Errorf("failed to pause container %q before checkpointing: %w", ctr.ID(), err)
+		}
 	}
 
 	defer func() {
@@ -74,7 +91,7 @@ func (c *ContainerServer) ContainerCheckpoint(
 			log.Errorf(ctx, "Failed to update container status: %q: %v", ctr.ID(), err)
 		}
 
-		if ctr.State().Status == oci.ContainerStatePaused {
+		if pausedByUs && ctr.State().Status == oci.ContainerStatePaused {
 			err := c.runtime.UnpauseContainer(ctx, ctr)
 			if err != nil {
 				log.Errorf(ctx, "Failed to unpause container: %q: %v", ctr.ID(), err)
